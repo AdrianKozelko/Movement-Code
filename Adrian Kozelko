@@ -1,0 +1,488 @@
+using JetBrains.Annotations;
+using System.Collections;
+using System.Collections.Generic;
+using Unity.VisualScripting;
+using UnityEngine;
+using UnityEngine.SceneManagement;
+
+public class FPSController : MonoBehaviour
+{
+    [Header("Input Variables")]
+
+    private string horizontalMoveInput = "Horizontal";
+    private string verticalMoveInput = "Vertical";
+    private string MouseYInput = "Mouse Y";
+    private string MouseXInput = "Mouse X";
+
+    private KeyCode jumpKey = KeyCode.Space;
+
+    [Header("Character Variables")]
+
+    public CharacterController cc;
+
+    public ParticleSystem speedLines;
+
+    private float ER;
+    private float ERTimer;
+
+    [Header("Movement Variables")]
+
+    private float walkSpeed = 10f;
+    private float horizontalSpeed;
+    private float verticalSpeed;
+
+    private Vector3 currentMovement = Vector3.zero;
+
+    public Vector3 Respawn;
+
+    [Header("Camera Variables")]
+
+    public float mouseSensetivity = 2f;
+    private float upDownRange = 90f;
+    private float verticalRotation;
+
+    public GameObject playerCamera;
+
+    public Animator wAnim;
+
+    [Header("Scene Variables")]
+
+    public bool canReset = false;
+    private float reset;
+
+    private bool nextLevel = false;
+    private float next;
+
+    public string nextLevelName;
+
+    public bool Paused;
+
+    [Header("Jumping Variables")]
+
+    private float jumpForce = 7.5f;
+    private float gravityMultiplier = 1.75f;
+    private float inAirSpeed = 1.5f;
+    private float jumpRelease = 2f;
+    private float coyoteTime;
+    private float jumpBuffer;
+    private float gravity = 9.81f;
+
+    private int amountJumped = 0;
+
+    public bool grounded = false;
+
+    public LayerMask ground;
+
+    [Header("Slope Variables")]
+
+    private float maxSlopeAngle = 40f;
+
+    private RaycastHit slopeHit;
+
+    private Vector3 horizontalMovement;
+
+    private bool currentSlope;
+
+    [Header("Recoil Variables")]
+
+    private bool canRecoil;
+
+    private float xRecoil;
+    private float zRecoil;
+    private float yRecoil;
+    private float yRecoilCheck;
+    private float recoilJForce = 4;
+
+    public Material gray;
+    public Material orange;
+
+    [Header("Sound Variables")]
+
+    public AudioSource JumpSFX;
+    public AudioSource RunningSFX;
+    public AudioSource Music;
+
+    public bool canPlayJump;
+
+    public static float maxRunVolume;
+
+    public PauseScript pause;
+
+    void Start()
+    {
+        //Gets chartacer controller and camera
+        cc = GetComponent<CharacterController>();
+
+        //Locks and makes cursor invisible
+        Cursor.lockState = CursorLockMode.Locked;
+        Cursor.visible = false;
+
+        ParticleSystem speedLines = GameObject.FindGameObjectWithTag("Speed").GetComponent<ParticleSystem>();
+
+        wAnim = GameObject.FindGameObjectWithTag("Image").GetComponent<Animator>();
+
+        pause = GameObject.FindGameObjectWithTag("Pause").GetComponent<PauseScript>();
+
+        JumpSFX = GameObject.FindGameObjectWithTag("Jump").GetComponent<AudioSource>();
+        RunningSFX = GameObject.FindGameObjectWithTag("Run").GetComponent<AudioSource>();
+        Music = GameObject.FindGameObjectWithTag("Music").GetComponent<AudioSource>();
+
+        EventSystem.OnTimerStart();
+
+        RunningSFX.Play();
+
+        RunningSFX.volume = 0;
+    }
+
+    void Update()
+    {
+        HandleMovement();
+        HandleCamera();
+        HandleRecoil();
+        HandleRaycast();
+
+        //Increases speed lines over time
+        var emission = speedLines.emission;
+
+        emission.rateOverTime = ER;
+
+        //Ground check
+        grounded = Physics.Raycast(transform.position, Vector3.down, 1.25f, ground);
+
+        //Makes movement faster in air and handles coyoteTime
+        if (!grounded)
+        {
+            inAirSpeed = 1.5f;
+            coyoteTime += Time.deltaTime;
+        }
+        else
+        {
+            inAirSpeed = 1;
+        }
+
+        //Jump release
+        if (Input.GetKeyDown(jumpKey))
+        {
+            currentSlope = false;
+        }
+        if (Input.GetKey(jumpKey))
+        {
+            jumpRelease = 2;
+        }
+        if (Input.GetKeyUp(jumpKey))
+        {
+            jumpRelease = 3;
+        }
+
+        //Handles slope physics
+        if (onSlope() && currentSlope == true)
+        {
+            cc.Move(GetSlopeMoveDirection() * walkSpeed * 20.0f);
+        }
+
+        if (grounded == true && onSlope())
+        {
+            currentSlope = true;
+        }
+
+        //Reloads Current Scene
+        if (canReset == true)
+        {
+            reset += Time.deltaTime;
+        }
+
+        if (reset >= 0.25f)
+        {
+            SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex);
+        }
+
+        //Loads Next Level
+        if(nextLevel == true)
+        {
+            next += Time.deltaTime;
+        }
+
+        if (next >= 0.25f)
+        {
+            SceneManager.LoadScene(nextLevelName);
+        }
+
+        maxRunVolume = pause.SSlider.value;
+
+        //Pause Game
+
+        if (Input.GetKeyDown(KeyCode.Escape))
+        {
+            Paused = !Paused;
+        }
+
+        if(Paused == true)
+        {
+            mouseSensetivity = 0;
+
+            RunningSFX.Pause();
+            JumpSFX.Pause();
+            Music.Pause();
+        }
+        else
+        {
+            mouseSensetivity = 2f;
+
+            RunningSFX.UnPause();
+            JumpSFX.UnPause();
+            Music.UnPause();
+        }
+
+        //Sets the volume equal to slider
+        Music.volume = pause.MSlider.value;
+    }
+
+    void HandleMovement()
+    {
+        //Gets the movement Input
+        horizontalSpeed = Input.GetAxis(horizontalMoveInput) * walkSpeed * inAirSpeed;
+        verticalSpeed = Input.GetAxis(verticalMoveInput) * walkSpeed * inAirSpeed;
+
+        //Diagonal fix
+        if (Mathf.Abs(horizontalSpeed) >= (walkSpeed / 2) && Mathf.Abs(verticalSpeed) >= (walkSpeed / 2))
+        {
+            horizontalSpeed = horizontalSpeed / 1.5f;
+            verticalSpeed = verticalSpeed / 1.5f;
+        }
+
+        Vector3 horizontalMovement = new Vector3(horizontalSpeed, 0, verticalSpeed);
+        horizontalMovement = transform.rotation * horizontalMovement;
+
+        HandleGravityAndJumping();
+
+        currentMovement.x = horizontalMovement.x;
+        currentMovement.z = horizontalMovement.z;
+
+        cc.Move(currentMovement * Time.deltaTime + new Vector3(xRecoil, 0, zRecoil) * Time.deltaTime);
+
+        //increases speed while moving
+        if(Input.GetKey(KeyCode.A) || Input.GetKey(KeyCode.D) || Input.GetKey(KeyCode.W) || Input.GetKey(KeyCode.S))
+        {
+            walkSpeed = Mathf.MoveTowards(walkSpeed, 15f, 2 * Time.deltaTime);
+
+            ERTimer += Time.deltaTime;
+
+            if(grounded == true)
+            {
+                RunningSFX.volume = Mathf.MoveTowards(RunningSFX.volume, maxRunVolume, Time.deltaTime);
+            }
+            else
+            {
+                RunningSFX.volume = Mathf.MoveTowards(RunningSFX.volume, 0f, 5 * Time.deltaTime);
+            }
+
+            if (ERTimer >= 2f)
+            {
+                ER = Mathf.MoveTowards(ER, 75f, 10 * Time.deltaTime);
+            }
+        }
+        else
+        {
+            walkSpeed = 10;
+            ERTimer = 0;
+
+            ER = Mathf.MoveTowards(ER, 0, 150 * Time.deltaTime);
+
+            RunningSFX.volume = Mathf.MoveTowards(RunningSFX.volume, 0f, 5 * Time.deltaTime);
+        }
+    }
+
+    void HandleGravityAndJumping()
+    {
+        //Coyote time
+        if (Input.GetKeyDown(jumpKey) && coyoteTime <= 0.2f && amountJumped == 0)
+        {
+            currentMovement.y = jumpForce * gravityMultiplier;
+
+            amountJumped = amountJumped + 1;
+            currentSlope = false;
+        }
+
+        if(Input.GetKey(jumpKey) && canPlayJump == true && jumpBuffer < 0.25f)
+        {
+            JumpSFX.Play();
+            canPlayJump = false;
+        }
+
+        if (cc.isGrounded || grounded == true && currentSlope == true)
+        {
+            jumpRelease = 2;
+            coyoteTime = 0;
+            amountJumped = 0;
+
+            if (cc.isGrounded == true)
+            {
+                currentMovement.y = 0f;
+            }
+
+            //Jumps
+            if (Input.GetKey(jumpKey) && jumpBuffer < 0.25f)
+            {
+                currentMovement.y = jumpForce * gravityMultiplier;
+
+                amountJumped = amountJumped + 1;
+                currentSlope = false;
+            }
+        }
+        else
+        {
+            //gravity
+            currentMovement.y -= gravity * Time.deltaTime * Mathf.Pow(gravityMultiplier, jumpRelease);
+        }
+
+            if (grounded == true)
+        {
+            canPlayJump = true;
+
+            if (GameObject.FindGameObjectWithTag("NotBouncer"))
+            {
+                GameObject.FindGameObjectWithTag("NotBouncer").GetComponent<MeshRenderer>().material = orange;
+                GameObject.FindGameObjectWithTag("NotBouncer").tag = ("Bouncer");
+            }
+        }
+
+        //Jump buffer
+        if (Input.GetKey(jumpKey))
+        {
+            jumpBuffer += Time.deltaTime;
+        }
+        else
+        {
+            jumpBuffer = 0;
+        }
+    }
+
+    void HandleCamera()
+    {
+        float mouseXRotation = Input.GetAxis(MouseXInput) * mouseSensetivity;
+        transform.Rotate(0, mouseXRotation, 0);
+
+        verticalRotation -= Input.GetAxis(MouseYInput) * mouseSensetivity;
+        verticalRotation = Mathf.Clamp(verticalRotation, -upDownRange, upDownRange);
+
+        playerCamera.transform.localRotation = Quaternion.Euler(verticalRotation, 0, 0);
+    }
+
+    void HandleRecoil()
+    {
+        if (Input.GetButton("Fire1") && canRecoil == true)
+        {
+            currentMovement.y = jumpForce * yRecoil * recoilJForce * gravityMultiplier;
+
+            if (playerCamera.transform.eulerAngles.y <= 90.09f && playerCamera.transform.eulerAngles.y >= 89.91f ||
+                playerCamera.transform.eulerAngles.y <= 270.09f && playerCamera.transform.eulerAngles.y >= 269.91f)
+            {
+                zRecoil = 0;
+            }
+            else
+            {
+                zRecoil = -Mathf.Cos(transform.eulerAngles.y * Mathf.Deg2Rad) * yRecoilCheck * 40;
+            }
+
+            if (playerCamera.transform.eulerAngles.y <= 180.09f && playerCamera.transform.eulerAngles.y >= 179.91f ||
+                playerCamera.transform.eulerAngles.y <= 0.09f && playerCamera.transform.eulerAngles.y >= 359.91f)
+            {
+                xRecoil = 0;
+            }
+            else
+            {
+                xRecoil = -Mathf.Sin(transform.eulerAngles.y * Mathf.Deg2Rad) * yRecoilCheck * 40;
+            }
+
+            canRecoil = false;
+        }
+
+        if (playerCamera.transform.eulerAngles.x <= 90.09f && playerCamera.transform.eulerAngles.x >= 89.91f ||
+            playerCamera.transform.eulerAngles.x <= -90.09f && playerCamera.transform.eulerAngles.x >= -89.91f)
+        {
+            yRecoilCheck = 0;
+        }
+        else
+        {
+            yRecoilCheck = Mathf.Cos(playerCamera.transform.eulerAngles.x * Mathf.Deg2Rad);
+        }
+
+        if (playerCamera.transform.eulerAngles.x <= 0.09f && playerCamera.transform.eulerAngles.x >= -0.09)
+        {
+            yRecoil = 0;
+        }
+        else
+        {
+            yRecoil = Mathf.Sin(playerCamera.transform.eulerAngles.x * Mathf.Deg2Rad);
+        }
+
+        xRecoil = Mathf.MoveTowards(xRecoil, 0, 40 * Time.deltaTime);
+        zRecoil = Mathf.MoveTowards(zRecoil, 0, 40 * Time.deltaTime);
+    }
+
+    void HandleRaycast()
+    {
+        //Raycast for bouncer detection
+        Ray ray = Camera.main.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f));
+
+        Debug.DrawRay(ray.origin, ray.direction * 10, Color.green);
+
+        RaycastHit hit;
+
+            if (Physics.Raycast(ray, out hit) && hit.transform.CompareTag("Bouncer") && grounded == false)
+            {
+                canRecoil = true;
+
+                if (Input.GetButton("Fire1"))
+                {
+                    hit.transform.gameObject.GetComponent<MeshRenderer>().material = gray;
+                    ER = 75;
+                    hit.transform.tag = ("NotBouncer");
+                }
+            }
+            else
+            {
+                canRecoil = false;
+            }
+    }
+
+    //Slope check
+    public bool onSlope()
+    {
+        if (Physics.Raycast(transform.position, Vector3.down, out slopeHit, 1.5f))
+        {
+            float angle = Vector3.Angle(Vector3.up, slopeHit.normal);
+            return angle < maxSlopeAngle && angle != 0;
+        }
+        return false;
+    }
+    private Vector3 GetSlopeMoveDirection()
+    {
+        return Vector3.ProjectOnPlane(horizontalMovement, slopeHit.normal).normalized;
+    }
+
+    //Reloads Scene
+    private void OnTriggerStay(Collider collision)
+    {
+        //Loads Scene
+        if (collision.gameObject.tag == "Death")
+        {
+            canReset = true;
+
+            wAnim.Play("WFadeIn");
+        }
+
+        if(collision.gameObject.tag == "Laser")
+        {
+            nextLevel = true;
+
+            wAnim.Play("WFadeIn");
+        }
+
+        //Cancels Jump if hitting head
+        if (collision.gameObject.tag == "Ceiling")
+        {
+            currentMovement.y = 0f;
+        }
+    }
+}
